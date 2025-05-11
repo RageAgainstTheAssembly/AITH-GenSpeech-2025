@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import torchaudio
+import os
+from pathlib import Path
 
 _SAMPLE_RATE = 16_000
 _N_MELS = 80
@@ -9,6 +11,12 @@ _HOP_LENGTH = 160
 _F_MIN = 50
 _F_MAX = 7_600
 _TOP_DB = 80
+
+VOCAB = [
+    '<BLANK>', ' ', 'а', 'в', 'д', 'е', 'и', 'к', 'м', 'н', 
+    'о', 'п', 'р', 'с', 'т', 'х', 'ц', 'ч', 'ш', 'ы', 'ь', 'я'
+]
+
 
 _mel_spec_transform = torchaudio.transforms.MelSpectrogram(
     sample_rate=_SAMPLE_RATE, n_fft=_N_FFT, hop_length=_HOP_LENGTH, n_mels=_N_MELS, f_min=_F_MIN, f_max=_F_MAX
@@ -102,30 +110,39 @@ def _greedy_decode_ctc(log_probs_ctc, tokenizer_instance):
         for seq in tokens
     ]
 
+
 class ASRModel:
-    def __init__(self, checkpoint_path, device=None):
-        self.device = device if device else ("cuda" if torch.cuda.is_available() else "cpu")
+    def __init__(self, checkpoint_path=None, device=None):
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+
+        if checkpoint_path is None:
+            checkpoint_path = os.path.join(
+                os.path.dirname(__file__),
+                'weights',
+                'model.pt'
+            )
         
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
-        
-        self.idx2char = checkpoint['vocab']
+        if not os.path.exists(checkpoint_path):
+            raise FileNotFoundError(
+                f"Model weights not found at {checkpoint_path}. "
+                "Please specify checkpoint_path or ensure weights are in the correct location."
+            )
+
+        self.idx2char = VOCAB
         self.tokenizer = CharTokenizer(idx2char_list=self.idx2char)
-        vocab_size = len(self.idx2char)
-        
-        saved_cfg = checkpoint.get('cfg', {})
-        
+
         model_channels = 384
-        model_dropout = saved_cfg.get('dropout', 0.2)
+        model_dropout = 0.2
         
         self.model = QuartzNetSmallCTC(
-            vocab_size=vocab_size,
+            vocab_size=len(VOCAB),
             in_feats=_N_MELS, 
             channels=model_channels,
-            dropout=model_dropout 
+            dropout=model_dropout
         ).to(self.device)
         
-        model_state_key = 'model' if 'model' in checkpoint else 'model_state'
-        self.model.load_state_dict(checkpoint[model_state_key])
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        self.model.load_state_dict(checkpoint['model'])
         self.model.eval()
 
         self.resampler_cache = {}
